@@ -1,0 +1,48 @@
+name: Twelve-hour flat pause cycle audit
+on:
+  push:
+    paths:
+      - '.github/workflows/pause-cycle-12h.yml'
+      - 'src/test_pause_cycle_12h.py'
+      - 'src/test_12h_pause_cycle.py'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/tpo_range_h1.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Previous flat-detector comparison regression tests
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Twelve-hour pause state machine tests
+        run: python src/test_12h_pause_cycle.py
+      - name: Download and validate real EURUSD H1
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Twelve-hour pause and resume research only
+        run: |
+          set -o pipefail
+          python src/test_pause_cycle_12h.py data/eurusd_h1.csv | tee reports-pause-cycle-12h.txt
+      - name: Upload reports and case-by-case hourly ledger, no raw data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pause-cycle-12h-research
+          path: |
+            reports-pause-cycle-12h.txt
+            reports/pause_cycle_12h*.json
+            reports/pause_cycle_12h*.csv
+            reports/pause_hours_12h*.csv
+          if-no-files-found: warn

@@ -1,0 +1,47 @@
+name: Equal hedge versus exit and re-entry 12h research
+on:
+  push:
+    paths:
+      - '.github/workflows/hedge-return-12h-research.yml'
+      - 'src/hedge_return_12h_research.py'
+      - 'src/test_hedge_return_12h_research.py'
+      - 'src/aggressive_range_backtest_h1.py'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prior signal regression checks
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Equal hedge and cash comparison synthetic unit tests
+        run: python src/test_hedge_return_12h_research.py
+      - name: Download and validate historical EURUSD H1 BID
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Run paired 12-hour hedge research offline, no orders
+        run: |
+          set -o pipefail
+          python src/hedge_return_12h_research.py data/eurusd_h1.csv | tee hedge-return-12h-log.txt
+      - name: Publish reproducible metrics and paired execution ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hedge-return-12h-research
+          path: |
+            hedge-return-12h-log.txt
+            reports/hedge_12h_research.json
+            reports/hedge_12h_*.csv
+          if-no-files-found: warn

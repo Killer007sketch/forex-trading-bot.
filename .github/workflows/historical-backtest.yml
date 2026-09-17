@@ -1,5 +1,10 @@
 name: Historical EURUSD backtest
 on:
+  push:
+    paths:
+      - '.github/workflows/historical-backtest.yml'
+      - 'scripts/download_eurusd.py'
+      - 'src/backtest.py'
   workflow_dispatch:
     inputs:
       from_date:
@@ -27,7 +32,7 @@ jobs:
       - name: Inspect downloader CLI
         run: npx --yes dukascopy-node --help
       - name: Download and validate EURUSD H1
-        run: python scripts/download_eurusd.py --from-date '${{ inputs.from_date }}' --to-date '${{ inputs.to_date }}'
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
       - name: Run research backtest
         run: python src/backtest.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.005 | tee reports-summary.txt
       - name: Upload results (not raw market data)

@@ -8,7 +8,7 @@ import math
 import subprocess
 from pathlib import Path
 
-TICK = 0.00001  # EURUSD five-decimal quote precision; only one tick permitted
+TICK = 0.00001
 
 
 def main():
@@ -25,7 +25,7 @@ def main():
     cmd = ['npx', '--yes', 'dukascopy-node', '-i', 'eurusd', '-from', str(start), '-to', str(end), '-t', 'h1', '-f', 'csv', '-dir', str(target.parent)]
     print('Running:', ' '.join(cmd), flush=True)
     subprocess.run(cmd, check=True)
-    candidates = sorted((p for p in target.parent.glob('*.csv') if p != target), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = sorted((p for p in target.parent.glob('*.csv') if p != target and p.name != 'ohlc-corrections.csv'), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
         raise RuntimeError('No source CSV downloaded')
     source = candidates[0]
@@ -38,8 +38,14 @@ def main():
         fields = {name.strip().lower(): name for name in reader.fieldnames}
         if not all(k in fields for k in ('open', 'high', 'low', 'close')):
             raise ValueError(f'Unexpected CSV columns: {reader.fieldnames}')
+        time_field = next((fields[k] for k in ('timestamp', 'time', 'datetime', 'date') if k in fields), None)
+        if time_field is None:
+            raise ValueError(f'No timestamp column in source: {reader.fieldnames}')
         for line_number, record in enumerate(reader, start=2):
             try:
+                timestamp = record[time_field].strip()
+                if not timestamp:
+                    raise ValueError('Empty timestamp')
                 o, h, l, c = (float(record[fields[k]]) for k in ('open', 'high', 'low', 'close'))
                 if not all(math.isfinite(v) and v > 0 for v in (o, h, l, c)):
                     raise ValueError('Nonpositive or nonfinite price')
@@ -47,9 +53,8 @@ def main():
                 if fixed_h - h > TICK + 1e-10 or l - fixed_l > TICK + 1e-10:
                     raise ValueError('OHLC discrepancy exceeds one tick')
                 if fixed_h != h or fixed_l != l:
-                    corrections.append((line_number, record.get(fields.get('timestamp', ''), ''),
-                                        f'{h:.5f}', f'{fixed_h:.5f}', f'{l:.5f}', f'{fixed_l:.5f}'))
-                rows.append((o, fixed_h, fixed_l, c))
+                    corrections.append((line_number, timestamp, f'{h:.5f}', f'{fixed_h:.5f}', f'{l:.5f}', f'{fixed_l:.5f}'))
+                rows.append((timestamp, o, fixed_h, fixed_l, c))
             except (TypeError, ValueError, KeyError) as exc:
                 invalid.append((line_number, str(exc), repr(record)))
     audit = target.parent / 'ohlc-corrections.csv'
@@ -66,7 +71,7 @@ def main():
         raise ValueError(f'Insufficient hourly bars: {len(rows)}')
     with target.open('w', newline='') as handle:
         writer = csv.writer(handle)
-        writer.writerow(['open', 'high', 'low', 'close'])
+        writer.writerow(['timestamp', 'open', 'high', 'low', 'close'])
         writer.writerows(rows)
     print(f'Validated {len(rows)} bars; wrote {target}', flush=True)
 

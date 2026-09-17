@@ -43,7 +43,7 @@ class CompareTests(unittest.TestCase):
 
     def test_confusion_on_identical_opportunities(self):
         def row(flag, breakout):
-            return {'tpo':flag,'range_atr':not flag,'combined':False,
+            return {'time':T,'tpo':flag,'range_atr':not flag,'combined':False,
                     'oracle':{'breakout':breakout,'side':0,'first':None,'third':None},
                     'warning':None,'confirmation':None}
         episodes=[row(True,False),row(True,True),row(False,False),row(False,True)]

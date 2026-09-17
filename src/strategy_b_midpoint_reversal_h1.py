@@ -1,25 +1,20 @@
-"""RESEARCH ONLY: Strategy B. Never sends orders or touches Strategy A.
+"""Research-only Strategy B. No orders, broker connections, or Strategy A edits.
 
-Frozen prior 80 H1 channel from the existing Range/ATR<5 detector, daily 00 UTC,
-12 H1 hours. A midpoint touch opens ONE equal-EUR long and short. At 90% channel
-(long side) close long and add short, or at 10% close short and add long. From
-then on close the TWO remaining same-side legs at midpoint (success) or the
-corresponding OUTER channel edge (stop); at 12h flatten everything. After a
-completed cycle, next entry is possible only in a LATER H1 bar. One initial
-midpoint touch may support one cycle; never assume a fill unless price touches.
+Frozen prior 80 H1 extremes, Range/ATR <5, one signal at 00 UTC, 12-hour
+windows. Enter equal-unit EUR long+short only when midpoint actually touched.
+At 90% close long, open second short; at 10% close short, open second long.
+Close two remaining same-direction legs at midpoint (return) or respective
+outer boundary (stop); expiry closes every leg. Up to three cycles per window,
+never a second entry in the same H1 as previous completion.
 
-BID OHLC bars cannot determine multiple intrabar crossings. Do not act on
-pivot in the midpoint-entry bar; if the outer edge is hit in this bar, unwind
-the equal pair at the close and flag ambiguity. If BOTH pivots hit in the same
-bar, unwind the equal pair at close, flag; no invented winning direction. If
-pivot AND stop hit, adverse stop wins. If pivot AND midpoint hit, do not count
-return until next hour. If stop AND midpoint hit for an already active pair,
-stop wins. Gaps are filled at bar OPEN if more adverse than trigger. These are
-research conventions, not actual tick chronology or executable quotes.
-
-Costs: BID historical + hypothetical fixed spread and slip per fill; no real
-ASK, commission, broker hedging permission, margin, financing, swap or guarantee.
-The 2023-26 segment is ALREADY INSPECTED, not untouched out-of-sample.
+BID-only H1 ambiguous chronology: entry-hour pivot deferred, entry-hour
+outer breach flattens paired legs; both pivots in same later H1 flatten pair;
+pivot + adverse outer boundary -> outer stop first, pivot + midpoint -> return
+not permitted until later bar; existing stop + return -> outer stop first.
+The conservatively modelled event ordering is NOT tick-realizable evidence.
+Historical 2023-26 is already inspected, NOT independent OOS. Hypothetical
+fixed spread/slippage only; no commission, margin, swap, genuine ask, broker
+hedge authorization, assured fills, or actual trading.
 """
 import csv
 import datetime as dt
@@ -34,276 +29,264 @@ from compare_tpo_atr_h1 import HORIZON, collect, range_atr_signal
 from range_guard_h1 import load_h1, execution
 from trend_h4 import PIP, load_h4, indicators
 
-RISK_FRACTION = .015
-MAX_SINGLE_LEG_USD_NOTIONAL_TO_EQUITY = 3.0  # triple gross <= 9x, NOT broker leverage
-MID = .50
-PIVOT = .90
+RISK_FRACTION=.015
+MAX_SINGLE_LEG_USD_NOTIONAL_TO_EQUITY=3.0 # maximum triple gross ~9x; no real margin model
 
 
-def levels(low, high):
-    assert 0 < low < high
-    w = high-low
-    return low+w*.10, low+w*.50, low+w*.90
+def levels(lower,upper):
+    assert 0<lower<upper
+    width=upper-lower
+    return lower+.1*width,lower+.5*width,lower+.9*width
 
 
-def size(balance, midpoint, width, spread, slip):
-    # Loss of ideal complete stop cycle is 0.2 width per one unit; buffer costs.
-    risk_unit = .20*width + (4*spread+8*slip)*PIP
-    risk_units = math.floor(balance*RISK_FRACTION/risk_unit/LOT_UNITS)*LOT_UNITS
-    nominal_units = math.floor(balance*MAX_SINGLE_LEG_USD_NOTIONAL_TO_EQUITY/midpoint/LOT_UNITS)*LOT_UNITS
-    return int(max(0,min(risk_units,nominal_units)))
+def size(balance,mid,width,spread,slip):
+    risk=.2*width+(4*spread+8*slip)*PIP
+    by_risk=math.floor(balance*RISK_FRACTION/risk/LOT_UNITS)*LOT_UNITS
+    by_nominal=math.floor(balance*MAX_SINGLE_LEG_USD_NOTIONAL_TO_EQUITY/mid/LOT_UNITS)*LOT_UNITS
+    return int(max(0,min(by_risk,by_nominal)))
 
 
-def cycle(bars, lower, upper, initial_balance, spread, slip, max_cycles=3):
-    assert len(bars)==HORIZON and lower<upper
-    low_pivot, mid, upper_pivot=levels(lower,upper)
+class Window(list):
+    """Ratios calculated only using bars closed by respective H1 close."""
+    def __init__(self,bars,ratios):
+        super().__init__(bars)
+        self.ratios=ratios
+
+
+def cycle(window,lower,upper,initial_balance,spread,slip,max_cycles=3):
+    assert len(window)==HORIZON and lower<upper and len(window.ratios)==HORIZON
+    low_pivot,mid,high_pivot=levels(lower,upper)
     balance=initial_balance
-    active=True
-    p=None
-    cycles=0
-    counts={k:0 for k in ('midpoint_entries','pivot_upper','pivot_lower',
-        'midpoint_returns','outer_stops','pivot_expiries','paired_expiries',
+    armed=True
+    pos=None
+    started=0
+    events={key:0 for key in (
+        'midpoint_entries','pivot_upper','pivot_lower','midpoint_returns',
+        'outer_stops','pivot_expiries','paired_expiries',
         'entry_hour_outer_ambiguous','entry_hour_pivot_deferred',
         'two_pivots_same_hour_ambiguous','pivot_and_stop_same_hour',
         'pivot_and_midpoint_same_hour','stop_and_midpoint_same_hour',
         'gap_adverse_stops','gap_pivot_beyond_edge','pause_outer',
         'pause_ratio','resume','skipped_size','cycles_positive',
         'cycles_negative','cycles_zero')}
-    finished=[]
-    trades=[]
+    completed=[]
+    ledger=[]
 
-    def log(t, event, side, bid, units, fill, pnl):
-        trades.append({'utc':t.isoformat(),'event':event,'direction':side,
-                       'reference_bid':round(bid,6),'fill':round(fill,6),
+    def quote(bid,side):return execution(bid,side,spread,slip)
+
+    def log(t,event,side,bid,units,price,pnl=0):
+        ledger.append({'utc':t.isoformat(),'event':event,'direction':side,
+                       'reference_bid':round(bid,6),'fill':round(price,6),
                        'units_eur':units,'realized_usd':round(pnl,6)})
-
-    def fill(bid, side):
-        return execution(bid,side,spread,slip)
 
     def realize(t,event,side,bid,entry,units):
         nonlocal balance
-        price=fill(bid,-side)
+        price=quote(bid,-side)
         pnl=side*units*(price-entry)
         balance+=pnl
-        p['result']+=pnl
+        pos['pnl']+=pnl
         log(t,event,'long' if side==1 else 'short',bid,units,price,pnl)
 
-    def end_cycle(t,reason):
-        nonlocal p
-        value=p['result']
-        finished.append({'opened_utc':p['opened'].isoformat(),
-                         'closed_utc':t.isoformat(),'reason':reason,
-                         'direction':'up' if p['pivot']==1 else 'down' if p['pivot']==-1 else 'none',
-                         'units_eur':p['units'],'gross_channel_width':round(upper-lower,6),
-                         'pnl_usd':round(value,6)})
-        if value>1e-7:counts['cycles_positive']+=1
-        elif value< -1e-7:counts['cycles_negative']+=1
-        else:counts['cycles_zero']+=1
-        p=None
+    def finalize(t,reason):
+        nonlocal pos
+        completed.append({'opened_utc':pos['opened'].isoformat(),
+            'closed_utc':t.isoformat(),'reason':reason,
+            'direction':{0:'none',1:'up',-1:'down'}[pos['pivot']],
+            'units_eur':pos['units'],'gross_channel_width':round(upper-lower,6),
+            'pnl_usd':round(pos['pnl'],6)})
+        if pos['pnl']>1e-7:events['cycles_positive']+=1
+        elif pos['pnl']< -1e-7:events['cycles_negative']+=1
+        else:events['cycles_zero']+=1
+        pos=None
 
-    def exit_legs(t,bid,reason):
-        nonlocal p
-        if p['state']=='paired':
-            realize(t,reason+'_long',1,bid,p['long_entry'],p['units'])
-            realize(t,reason+'_short',-1,bid,p['short_entry'],p['units'])
-        elif p['state']=='short2':
-            realize(t,reason+'_first_short',-1,bid,p['short_entry'],p['units'])
-            realize(t,reason+'_new_short',-1,bid,p['second_entry'],p['units'])
+    def close(t,bid,reason):
+        if pos['state']=='paired':
+            realize(t,reason+'_long',1,bid,pos['long_entry'],pos['units'])
+            realize(t,reason+'_short',-1,bid,pos['short_entry'],pos['units'])
+        elif pos['state']=='short2':
+            realize(t,reason+'_first_short',-1,bid,pos['short_entry'],pos['units'])
+            realize(t,reason+'_new_short',-1,bid,pos['second_entry'],pos['units'])
         else:
-            assert p['state']=='long2'
-            realize(t,reason+'_first_long',1,bid,p['long_entry'],p['units'])
-            realize(t,reason+'_new_long',1,bid,p['second_entry'],p['units'])
-        end_cycle(t,reason)
+            assert pos['state']=='long2'
+            realize(t,reason+'_first_long',1,bid,pos['long_entry'],pos['units'])
+            realize(t,reason+'_new_long',1,bid,pos['second_entry'],pos['units'])
+        finalize(t,reason)
 
-    for j,(t,op,hi,lo,cl) in enumerate(bars):
-        when=t+dt.timedelta(hours=1)
-        # A later bar is required for a new cycle (no look-ahead same-hour reuse).
+    for j,(t,op,hi,lo,cl) in enumerate(window):
+        end=t+dt.timedelta(hours=1)
         entered=False
-        if p is None and active and cycles<max_cycles and lo<=mid<=hi:
+        if pos is None and armed and started<max_cycles and lo<=mid<=hi:
             units=size(balance,mid,upper-lower,spread,slip)
             if units>=LOT_UNITS:
-                lp=fill(mid,1);sp=fill(mid,-1)
-                p={'state':'paired','opened':t,'units':units,'long_entry':lp,
-                   'short_entry':sp,'second_entry':None,'result':0.,'pivot':0}
-                log(t,'enter_long','long',mid,units,lp,0.)
-                log(t,'enter_short','short',mid,units,sp,0.)
-                cycles+=1;counts['midpoint_entries']+=1
-                entered=True
-                if hi>=upper_pivot or lo<=low_pivot:
-                    counts['entry_hour_pivot_deferred']+=1
+                lp=quote(mid,1);sp=quote(mid,-1)
+                pos={'state':'paired','opened':t,'units':units,
+                     'long_entry':lp,'short_entry':sp,
+                     'second_entry':None,'pnl':0.,'pivot':0}
+                log(t,'enter_long','long',mid,units,lp)
+                log(t,'enter_short','short',mid,units,sp)
+                entered=True;started+=1;events['midpoint_entries']+=1
+                if hi>=high_pivot or lo<=low_pivot:
+                    events['entry_hour_pivot_deferred']+=1
                 if hi>=upper or lo<=lower:
-                    counts['entry_hour_outer_ambiguous']+=1
-                    exit_legs(when,cl,'entry_bar_outer_ambiguous')
-            else:
-                counts['skipped_size']+=1
+                    events['entry_hour_outer_ambiguous']+=1
+                    close(end,cl,'entry_bar_outer_ambiguous')
+            else:events['skipped_size']+=1
 
-        if p is not None and not entered:
-            if p['state']=='paired':
-                up=hi>=upper_pivot
+        if pos is not None and not entered:
+            if pos['state']=='paired':
+                up=hi>=high_pivot
                 down=lo<=low_pivot
                 if up and down:
-                    counts['two_pivots_same_hour_ambiguous']+=1
-                    exit_legs(when,cl,'both_pivots_ambiguous')
+                    events['two_pivots_same_hour_ambiguous']+=1
+                    close(end,cl,'both_pivots_ambiguous')
                 elif up or down:
-                    side=1 if up else -1
-                    pivot=upper_pivot if side==1 else low_pivot
-                    edge=upper if side==1 else lower
-                    if (op>=edge if side==1 else op<=edge):
-                        # Already beyond stop at bar open: no fabricated pivot profit.
-                        counts['gap_pivot_beyond_edge']+=1
-                        exit_legs(t,op,'gap_past_outer_pair')
+                    direction=1 if up else -1
+                    pivot=high_pivot if up else low_pivot
+                    edge=upper if up else lower
+                    if (op>=edge if up else op<=edge):
+                        events['gap_pivot_beyond_edge']+=1
+                        close(t,op,'gap_past_outer_pair')
                     else:
-                        at=(max(op,pivot) if side==1 else min(op,pivot))
-                        # Matching sale of long and opening of second short or inverse.
-                        if side==1:
-                            realize(t,'close_long_at_upper_pivot',1,at,p['long_entry'],p['units'])
-                            p['second_entry']=fill(at,-1)
-                            log(t,'open_second_short','short',at,p['units'],p['second_entry'],0.)
-                            p['state']='short2';counts['pivot_upper']+=1
+                        at=max(op,pivot) if up else min(op,pivot)
+                        if up:
+                            realize(t,'close_long_upper_pivot',1,at,pos['long_entry'],pos['units'])
+                            pos['second_entry']=quote(at,-1)
+                            log(t,'open_second_short','short',at,pos['units'],pos['second_entry'])
+                            pos['state']='short2';events['pivot_upper']+=1
                         else:
-                            realize(t,'close_short_at_lower_pivot',-1,at,p['short_entry'],p['units'])
-                            p['second_entry']=fill(at,1)
-                            log(t,'open_second_long','long',at,p['units'],p['second_entry'],0.)
-                            p['state']='long2';counts['pivot_lower']+=1
-                        p['pivot']=side
-                        if (hi>=edge if side==1 else lo<=edge):
-                            counts['pivot_and_stop_same_hour']+=1
-                            exit_bid=max(op,edge) if side==1 else min(op,edge)
-                            exit_legs(when,exit_bid,'outer_stop')
-                            counts['outer_stops']+=1
-                        elif (lo<=mid if side==1 else hi>=mid):
-                            counts['pivot_and_midpoint_same_hour']+=1
-                            # No guaranteed return AFTER pivot in unknown H1 path.
-            elif p['state']=='short2':
+                            realize(t,'close_short_lower_pivot',-1,at,pos['short_entry'],pos['units'])
+                            pos['second_entry']=quote(at,1)
+                            log(t,'open_second_long','long',at,pos['units'],pos['second_entry'])
+                            pos['state']='long2';events['pivot_lower']+=1
+                        pos['pivot']=direction
+                        if (hi>=edge if up else lo<=edge):
+                            events['pivot_and_stop_same_hour']+=1
+                            stop_bid=max(op,edge) if up else min(op,edge)
+                            close(end,stop_bid,'outer_stop');events['outer_stops']+=1
+                        elif (lo<=mid if up else hi>=mid):
+                            # Order of target/pivot unknown; do not invent same-H1 win.
+                            events['pivot_and_midpoint_same_hour']+=1
+            elif pos['state']=='short2':
                 stop=hi>=upper or op>=upper
                 returned=lo<=mid or op<=mid
-                if stop and returned:counts['stop_and_midpoint_same_hour']+=1
+                if stop and returned:events['stop_and_midpoint_same_hour']+=1
                 if stop:
-                    bid=max(op,upper)
-                    if op>upper:counts['gap_adverse_stops']+=1
-                    exit_legs(when,bid,'outer_stop');counts['outer_stops']+=1
+                    at=max(op,upper)
+                    if op>upper:events['gap_adverse_stops']+=1
+                    close(end,at,'outer_stop');events['outer_stops']+=1
                 elif returned:
-                    bid=min(op,mid)
-                    exit_legs(when,bid,'midpoint_return');counts['midpoint_returns']+=1
+                    close(end,min(op,mid),'midpoint_return')
+                    events['midpoint_returns']+=1
             else:
-                assert p['state']=='long2'
+                assert pos['state']=='long2'
                 stop=lo<=lower or op<=lower
                 returned=hi>=mid or op>=mid
-                if stop and returned:counts['stop_and_midpoint_same_hour']+=1
+                if stop and returned:events['stop_and_midpoint_same_hour']+=1
                 if stop:
-                    bid=min(op,lower)
-                    if op<lower:counts['gap_adverse_stops']+=1
-                    exit_legs(when,bid,'outer_stop');counts['outer_stops']+=1
+                    at=min(op,lower)
+                    if op<lower:events['gap_adverse_stops']+=1
+                    close(end,at,'outer_stop');events['outer_stops']+=1
                 elif returned:
-                    bid=max(op,mid)
-                    exit_legs(when,bid,'midpoint_return');counts['midpoint_returns']+=1
+                    close(end,max(op,mid),'midpoint_return')
+                    events['midpoint_returns']+=1
 
-        # Existing positions stay managed, but no new midpoint entries while paused.
         if hi>upper or lo<lower:
-            if active:counts['pause_outer']+=1
-            active=False
+            if armed:events['pause_outer']+=1
+            armed=False
         else:
-            # Only at H1 CLOSE, affecting next bar.
-            past=bars[:j+1]
-            # Caller supplies precomputed real ratios below; this per-cycle
-            # field will be overwritten by run_segment's ratios argument.
-            current_ratio=bars.ratios[j] if hasattr(bars,'ratios') else None
-            if current_ratio is None or current_ratio>=5:
-                if active:counts['pause_ratio']+=1
-                active=False
-            elif not active and j<HORIZON-1:
-                active=True;counts['resume']+=1
+            ratio=window.ratios[j]
+            if ratio is None or ratio>=5:
+                if armed:events['pause_ratio']+=1
+                armed=False
+            elif not armed and j<HORIZON-1:
+                armed=True;events['resume']+=1
 
-    if p is not None:
-        t=bars[-1][0]+dt.timedelta(hours=1)
-        if p['state']=='paired':
-            exit_legs(t,bars[-1][4],'paired_expiry');counts['paired_expiries']+=1
+    if pos is not None:
+        end=window[-1][0]+dt.timedelta(hours=1)
+        if pos['state']=='paired':
+            close(end,window[-1][4],'paired_expiry');events['paired_expiries']+=1
         else:
-            exit_legs(t,bars[-1][4],'pivot_expiry');counts['pivot_expiries']+=1
-    assert p is None and cycles<=max_cycles
-    assert abs(initial_balance+sum(x['pnl_usd'] for x in finished)-balance)<.01
-    return balance,counts,finished,trades
-
-
-class Window(list):
-    """H1 bars plus completed-at-close ratios, no additional future information."""
-    def __init__(self,bars,ratios):
-        super().__init__(bars)
-        self.ratios=ratios
+            close(end,window[-1][4],'pivot_expiry');events['pivot_expiries']+=1
+    assert pos is None and started<=max_cycles
+    assert abs(initial_balance+sum(x['pnl_usd'] for x in completed)-balance)<.01
+    return balance,events,completed,ledger
 
 
 def run_segment(h1,episodes,spread,slip):
-    index={x[0]:i for i,x in enumerate(h1)}
+    ix={bar[0]:i for i,bar in enumerate(h1)}
     balance=INITIAL_USD
-    all_positions=[];all_legs=[];totals={};participating=0
+    positions=[];orders=[];counts={};episodes_traded=0
     for e in episodes:
         if not e['range_atr']:continue
-        i=index[e['time']]
-        ratios=[range_atr_signal(h1[i-80:i+j+1]) for j in range(HORIZON)]
-        window=Window(h1[i:i+HORIZON],ratios)
-        balance,counters,positions,legs=cycle(window,e['lower'],e['upper'],balance,spread,slip)
-        participating+=bool(positions)
-        all_positions.extend({'episode_utc':e['time'].isoformat(),**v} for v in positions)
-        all_legs.extend({'episode_utc':e['time'].isoformat(),**v} for v in legs)
-        for k,v in counters.items():totals[k]=totals.get(k,0)+v
-    winners=sum(p['pnl_usd']>0 for p in all_positions)
-    losers=sum(p['pnl_usd']<0 for p in all_positions)
-    total_pivot=totals['pivot_upper']+totals['pivot_lower']
-    terminal=totals['midpoint_returns']+totals['outer_stops']+totals['pivot_expiries']
-    assert total_pivot==terminal
+        i=ix[e['time']]
+        w=Window(h1[i:i+HORIZON],
+                 [range_atr_signal(h1[i-80:i+j+1]) for j in range(HORIZON)])
+        balance,event,completed,legs=cycle(w,e['lower'],e['upper'],balance,spread,slip)
+        episodes_traded+=bool(completed)
+        positions.extend({'episode_utc':e['time'].isoformat(),**x} for x in completed)
+        orders.extend({'episode_utc':e['time'].isoformat(),**x} for x in legs)
+        for name,n in event.items():counts[name]=counts.get(name,0)+n
+    outcomes=counts['midpoint_returns']+counts['outer_stops']+counts['pivot_expiries']
+    pivots=counts['pivot_upper']+counts['pivot_lower']
+    assert outcomes==pivots
     breakdown={}
-    for reason in sorted({x['reason'] for x in all_positions}):
-        records=[x for x in all_positions if x['reason']==reason]
-        breakdown[reason]={'count':len(records),'net_pnl_usd':round(sum(x['pnl_usd'] for x in records),2),
-                           'positive':sum(x['pnl_usd']>0 for x in records)}
+    for reason in sorted({x['reason'] for x in positions}):
+        xs=[x for x in positions if x['reason']==reason]
+        breakdown[reason]={'count':len(xs),
+            'net_pnl_usd':round(sum(x['pnl_usd'] for x in xs),2),
+            'positive':sum(x['pnl_usd']>0 for x in xs)}
+    denom=counts['midpoint_returns']+counts['outer_stops']
     return {'initial_usd':INITIAL_USD,'final_usd':round(balance,2),
         'return_pct':round(100*(balance/INITIAL_USD-1),2),
-        'signals':sum(x['range_atr'] for x in episodes),
-        'episodes_with_entry':participating,'completed_cycles':len(all_positions),
-        'positive_cycles':winners,'negative_cycles':losers,
-        'triggered_pivots':total_pivot,'resolved_pivot_outcomes':terminal,
-        'conditional_return_before_edge_pct':round(100*totals['midpoint_returns']/terminal,2) if terminal else None,
-        'conditional_return_excluding_expiry_pct':round(100*totals['midpoint_returns']/(totals['midpoint_returns']+totals['outer_stops']),2) if totals['midpoint_returns']+totals['outer_stops'] else None,
-        'events':totals,'exit_breakdown':breakdown},all_positions,all_legs
+        'signals':sum(e['range_atr'] for e in episodes),
+        'episodes_with_entry':episodes_traded,'completed_cycles':len(positions),
+        'positive_cycles':sum(x['pnl_usd']>0 for x in positions),
+        'negative_cycles':sum(x['pnl_usd']<0 for x in positions),
+        'triggered_pivots':pivots,'resolved_pivot_outcomes':outcomes,
+        'return_before_edge_including_expiry_pct':round(100*counts['midpoint_returns']/outcomes,2) if outcomes else None,
+        'return_before_edge_resolved_only_pct':round(100*counts['midpoint_returns']/denom,2) if denom else None,
+        'events':counts,'exit_breakdown':breakdown},positions,orders
 
 
 def self_test():
     a,b,c=levels(1,2)
     assert abs(a-1.1)<1e-10 and b==1.5 and abs(c-1.9)<1e-10
-    assert size(10000,1.5,1,0,0)>0
-    def test_prices(xs,expected):
-        t=dt.datetime(2026,1,1)
-        bars=Window([(t+dt.timedelta(hours=j),*row) for j,row in enumerate(xs)], [2.]*12)
-        result,c,finished,_=cycle(bars,1,2,10000,0,0,max_cycles=1)
-        assert c[expected]==1,(expected,c)
-        return result,finished
-    # 12 H1 bars, first midpoint touched, second pivot, third terminal.
+    # The pedagogical 1--2 channel has unrealistic EURUSD width. Use enough
+    # hypothetical capital to meet the real min 1000-EUR lot increment.
+    initial=1000000.
+    assert size(initial,1.5,1.,0.,0.)>=LOT_UNITS
+    t=dt.datetime(2026,1,1)
     pre=[(1.5,1.51,1.49,1.5),(1.5,1.91,1.49,1.9)]
     win=pre+[(1.9,1.91,1.49,1.5)]+[(1.5,1.6,1.4,1.5)]*9
-    loss=pre+[(1.9,2.01,1.80,2.0)]+[(2.,2.,2.,2.)]*9
-    p,cycles=test_prices(win,'midpoint_returns');q,other=test_prices(loss,'outer_stops')
-    assert p>10000 and q<10000 and len(cycles)==len(other)==1
-    # Equal midpoint open legs should have zero mark-to-market price delta,
-    # and gross winner=0.8 * units; loser=-0.2 * units with zero costs.
-    assert abs((p-10000)/cycles[0]['units_eur']-.8)<1e-8
-    assert abs((q-10000)/other[0]['units_eur']+.2)<1e-8
-    print('Strategy B midpoint success +0.8W and outer stop -0.2W synthetic tests PASS')
+    lose=pre+[(1.9,2.01,1.80,2.0)]+[(2.,2.,2.,2.)]*9
+    def execute(rows,key):
+        w=Window([(t+dt.timedelta(hours=j),*row) for j,row in enumerate(rows)],
+                 [2.]*HORIZON)
+        final,events,done,_=cycle(w,1.,2.,initial,0.,0.,max_cycles=1)
+        assert events[key]==1,(key,events)
+        assert len(done)==1
+        return final,done[0]
+    winning,wp=execute(win,'midpoint_returns')
+    losing,lp=execute(lose,'outer_stops')
+    assert abs((winning-initial)/wp['units_eur']-.8)<1e-8
+    assert abs((losing-initial)/lp['units_eur']+.2)<1e-8
+    print('Strategy B synthetic successful return +0.8W and outer stop -0.2W: PASS')
 
 
 def main():
     if len(sys.argv)==2 and sys.argv[1]=='--self-test':self_test();return
-    if len(sys.argv)!=2:raise SystemExit('Usage: strategy_b_midpoint_reversal_h1.py data/eurusd_h1.csv')
+    if len(sys.argv)!=2:raise SystemExit('Usage: python src/strategy_b_midpoint_reversal_h1.py data/eurusd_h1.csv')
     path=Path(sys.argv[1]);h1=load_h1(path);h4=load_h4(path)
     _,_,atr,_=indicators(h4)
     split=int(len(h4)*.7)
     end=h4[-1][0]+dt.timedelta(hours=4)
-    report={'data_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
-        'strategy':'B midpoint equal long+short; pivot 10/90pct, midpoint target, edge stop',
-        'params':{'midpoint_fraction':MID,'pivot_fraction':PIVOT,
-                  'units':'equal units EUR for all legs','max_cycles_per_12h':3,
-                  'risk_fraction':RISK_FRACTION,'max_single_leg_notional_x':MAX_SINGLE_LEG_USD_NOTIONAL_TO_EQUITY,
-                  'costs_pips':COSTS,'outside_wick_pause_new_cycles':True},
-        'limitations':'BID-only H1 intrabar order ambiguous; pivot-and-stop stop-first; pivot-and-midpoint deferred; midpoint-entry hour pivot deferred; both pivots ambiguous forced flat. Slippage/spread hypothetical; no margin, commission, swap, live hedging validation. Already inspected 2023-26, no clean OOS.',
+    out={'data_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+        'strategy':'B equal-unit initial long+short at midpoint, 10/90 pivot, return midpoint or stop outer edge',
+        'parameters':{'risk_fraction':RISK_FRACTION,'max_single_leg_notional_x':MAX_SINGLE_LEG_USD_NOTIONAL_TO_EQUITY,
+                      'max_cycles_12h':3,'cost_spread_slippage_pips':COSTS,
+                      'entry':'midpoint must be touched; entry-bar pivots deferred',
+                      'existing_flat_detector':'prior 20 H1 range/ATR14 < 5; prior 80 H1 frozen channel'},
+        'limitations':'BID-only H1, ambiguous event order, prior observed 2023-26, no genuine ask, broker hedge account/margin, commissions or swap. 00UTC daily sampled, not continuous intraday. Hypothetical, no orders.',
         'segments':{}}
     Path('reports').mkdir(exist_ok=True)
     for name,start,finish in (('development',h4[200][0],h4[split][0]),
@@ -311,15 +294,15 @@ def main():
         episodes,audit=collect(h1,h4,atr,start,finish)
         segment={'audit':audit,'variants':{}}
         for cost,(spread,slip) in COSTS.items():
-            metrics,positions,legs=run_segment(h1,episodes,spread,slip)
+            metrics,cycles,legs=run_segment(h1,episodes,spread,slip)
             segment['variants'][cost]=metrics
             print(name,cost,json.dumps(metrics,sort_keys=True))
-            for kind,records in (('cycles',positions),('legs',legs)):
+            for kind,rows in (('cycles',cycles),('legs',legs)):
                 with (Path('reports')/f'strategy_b_{name}_{cost}_{kind}.csv').open('w',newline='') as f:
-                    if records:
-                        w=csv.DictWriter(f,fieldnames=list(records[0]));w.writeheader();w.writerows(records)
-        report['segments'][name]=segment
-    (Path('reports')/'strategy_b_midpoint_report.json').write_text(json.dumps(report,indent=2)+'\n')
-    print('RESEARCH ONLY: no broker orders; no verified tick chronology.')
+                    if rows:
+                        w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+        out['segments'][name]=segment
+    (Path('reports')/'strategy_b_midpoint_report.json').write_text(json.dumps(out,indent=2)+'\n')
+    print('RESEARCH ONLY. No broker orders, not tick-verified.')
 
 if __name__=='__main__':main()

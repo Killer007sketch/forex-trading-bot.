@@ -1,0 +1,46 @@
+name: Research 2x USD hedge and protected 52pct trailing
+on:
+  push:
+    paths:
+      - '.github/workflows/hedge2-trailing52-research.yml'
+      - 'src/hedge_2x_trailing52_h1_research.py'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/aggressive_range_backtest_h1.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Original flat signal regression
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Verify USD sizing, hedge BE and trailing arithmetic
+        run: python src/hedge_2x_trailing52_h1_research.py --self-test
+      - name: Download and validate original EURUSD BID H1 source
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Offline 1x vs 2x, fixed target vs 52pct trailing, normal vs stress costs
+        run: |
+          set -o pipefail
+          python src/hedge_2x_trailing52_h1_research.py data/eurusd_h1.csv | tee hedge2-trailing52-log.txt
+      - name: Archive audit and fill-by-fill ledgers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hedge2-trailing52-research
+          path: |
+            hedge2-trailing52-log.txt
+            reports/hedge2_trailing52_report.json
+            reports/hedge2_trail_*.csv
+          if-no-files-found: warn

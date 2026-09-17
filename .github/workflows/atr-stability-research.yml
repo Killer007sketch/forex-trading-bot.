@@ -1,0 +1,47 @@
+name: ATR stability non-destructive experiment
+on:
+  push:
+    paths:
+      - '.github/workflows/atr-stability-research.yml'
+      - 'src/atr_stability_experiment_h1.py'
+      - 'src/test_atr_stability_experiment_h1.py'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/tpo_range_h1.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Original comparison regression tests
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: ATR stability deterministic tests
+        run: python src/test_atr_stability_experiment_h1.py
+      - name: Download and validate H1 dataset
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Side-by-side baseline and two predeclared stability variants
+        run: |
+          set -o pipefail
+          python src/atr_stability_experiment_h1.py data/eurusd_h1.csv | tee reports-atr-stability.txt
+      - name: Upload non-trading research metrics and matched events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atr-stability-research
+          path: |
+            reports-atr-stability.txt
+            reports/atr_stability_*.csv
+            reports/atr_stability_comparison.json
+          if-no-files-found: warn

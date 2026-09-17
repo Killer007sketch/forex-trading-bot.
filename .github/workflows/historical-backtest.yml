@@ -25,15 +25,18 @@ jobs:
         run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
       - name: Baseline H1 comparison
         run: python src/backtest.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.005 | tee reports-baseline.txt
-      - name: Independent H4 trend development and holdout
-        run: python src/trend_h4.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-trend-h4.txt
+      - name: H4 real minimum lot 0.01 with 300 USD (feasibility check)
+        run: python src/trend_h4.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-trend-h4-300-minlot.txt
+      - name: H4 hypothetical 0.0001 lot with 300 USD (NOT broker executable)
+        run: python src/trend_h4.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.0001 | tee reports-trend-h4-300-theoretical.txt
+      - name: H4 real minimum lot 0.01 with 10000 USD (capital sensitivity, not recommendation)
+        run: python src/trend_h4.py data/eurusd_h1.csv --initial 10000 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-trend-h4-10000-minlot.txt
       - name: Upload research outputs, not raw market data
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: eurusd-research-comparison
           path: |
-            reports-baseline.txt
-            reports-trend-h4.txt
+            reports-*.txt
             reports/*.csv
           if-no-files-found: warn

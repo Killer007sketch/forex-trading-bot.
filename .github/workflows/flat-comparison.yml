@@ -1,0 +1,44 @@
+name: Matched flat detector comparison
+on:
+  push:
+    paths:
+      - '.github/workflows/flat-comparison.yml'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/test_compare_tpo_atr_h1.py'
+      - 'src/tpo_range_h1.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Deterministic independent comparison tests
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Download and validate H1 source
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Matched TPO vs Range ATR vs both classification comparison
+        run: |
+          set -o pipefail
+          python src/compare_tpo_atr_h1.py data/eurusd_h1.csv | tee reports-flat-comparison.txt
+      - name: Upload comparison metrics and matched episode data only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matched-flat-detectors
+          path: |
+            reports-flat-comparison.txt
+            reports/tpo_atr_comparison*.csv
+            reports/tpo_atr_comparison.json
+          if-no-files-found: warn

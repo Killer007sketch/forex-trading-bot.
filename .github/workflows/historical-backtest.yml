@@ -10,6 +10,8 @@ on:
       - 'src/robustness_h4.py'
       - 'src/bounded_grid_h4.py'
       - 'src/regime_h4.py'
+      - 'src/regime_v2_h4.py'
+      - 'src/test_regime_v2.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,6 +30,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Regime v2 deterministic unit tests
+        run: python src/test_regime_v2.py
       - name: Download and validate EURUSD H1
         run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
       - name: Baseline H1 comparison at 1000 USD
@@ -54,6 +58,10 @@ jobs:
         run: |
           set -o pipefail
           python src/regime_h4.py data/eurusd_h1.csv | tee reports-regime.txt
+      - name: Compare causal regime v1 versus v2 on identical data
+        run: |
+          set -o pipefail
+          python src/regime_v2_h4.py data/eurusd_h1.csv | tee reports-regime-v2.txt
       - name: Upload research outputs, not raw market data
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,0 +1,45 @@
+name: TPO breakout event validation
+on:
+  push:
+    paths:
+      - '.github/workflows/tpo-validation.yml'
+      - 'src/evaluate_tpo_breakouts.py'
+      - 'src/test_evaluate_tpo_breakouts.py'
+      - 'src/tpo_range_h1.py'
+      - 'src/regime_v3_h4.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Deterministic event accounting tests
+        run: python src/test_evaluate_tpo_breakouts.py
+      - name: Download and validate H1 source
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Event-level warning, confirmation and delay diagnostics
+        run: |
+          set -o pipefail
+          python src/evaluate_tpo_breakouts.py data/eurusd_h1.csv | tee reports-tpo-validation.txt
+      - name: Upload validation reports, excluding raw data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpo-breakout-validation
+          path: |
+            reports-tpo-validation.txt
+            reports/tpo_accuracy_*.csv
+            reports/tpo_breakout_validation.json
+          if-no-files-found: warn

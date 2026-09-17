@@ -1,5 +1,5 @@
-"""Download and validate Dukascopy EURUSD H1 bid candles for research only.
-Dukascopy quotes are not RoboForex executable prices.
+"""Download Dukascopy EURUSD H1 bid candles; audit one-tick rounding fixes.
+Research only: Dukascopy quotes are not RoboForex executable prices.
 """
 import argparse
 import csv
@@ -7,6 +7,8 @@ import datetime as dt
 import math
 import subprocess
 from pathlib import Path
+
+TICK = 0.00001  # EURUSD five-decimal quote precision; only one tick permitted
 
 
 def main():
@@ -28,6 +30,7 @@ def main():
         raise RuntimeError('No source CSV downloaded')
     source = candidates[0]
     print(f'Source: {source}', flush=True)
+    rows, corrections, invalid = [], [], []
     with source.open(newline='', encoding='utf-8-sig') as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
@@ -35,23 +38,30 @@ def main():
         fields = {name.strip().lower(): name for name in reader.fieldnames}
         if not all(k in fields for k in ('open', 'high', 'low', 'close')):
             raise ValueError(f'Unexpected CSV columns: {reader.fieldnames}')
-        rows, invalid = [], 0
         for line_number, record in enumerate(reader, start=2):
             try:
                 o, h, l, c = (float(record[fields[k]]) for k in ('open', 'high', 'low', 'close'))
-                valid = (all(math.isfinite(v) and v > 0 for v in (o, h, l, c))
-                         and h >= max(o, l, c) and l <= min(o, h, c))
-            except (TypeError, ValueError, KeyError):
-                valid = False
-            if not valid:
-                invalid += 1
-                if invalid <= 10:
-                    print(f'INVALID source line {line_number}: {record!r}', flush=True)
-            else:
-                rows.append((o, h, l, c))
-    print(f'Validation: {len(rows)} valid, {invalid} invalid candles', flush=True)
+                if not all(math.isfinite(v) and v > 0 for v in (o, h, l, c)):
+                    raise ValueError('Nonpositive or nonfinite price')
+                fixed_h, fixed_l = max(o, h, c), min(o, l, c)
+                if fixed_h - h > TICK + 1e-10 or l - fixed_l > TICK + 1e-10:
+                    raise ValueError('OHLC discrepancy exceeds one tick')
+                if fixed_h != h or fixed_l != l:
+                    corrections.append((line_number, record.get(fields.get('timestamp', ''), ''),
+                                        f'{h:.5f}', f'{fixed_h:.5f}', f'{l:.5f}', f'{fixed_l:.5f}'))
+                rows.append((o, fixed_h, fixed_l, c))
+            except (TypeError, ValueError, KeyError) as exc:
+                invalid.append((line_number, str(exc), repr(record)))
+    audit = target.parent / 'ohlc-corrections.csv'
+    with audit.open('w', newline='') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(['source_line', 'timestamp', 'original_high', 'adjusted_high', 'original_low', 'adjusted_low'])
+        writer.writerows(corrections)
+    print(f'Validation: {len(rows)} accepted, {len(corrections)} one-tick adjustments, {len(invalid)} rejected; audit: {audit}', flush=True)
+    for line, reason, record in invalid[:10]:
+        print(f'INVALID source line {line}: {reason}: {record}', flush=True)
     if invalid:
-        raise ValueError(f'{invalid} invalid source candles; source line numbers and raw values printed above. No candles silently modified or dropped.')
+        raise ValueError(f'{len(invalid)} invalid source candles; no rows silently dropped')
     if len(rows) < 55:
         raise ValueError(f'Insufficient hourly bars: {len(rows)}')
     with target.open('w', newline='') as handle:

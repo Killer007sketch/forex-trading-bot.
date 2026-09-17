@@ -1,0 +1,46 @@
+name: Strategy B midpoint range research
+on:
+  push:
+    paths:
+      - '.github/workflows/strategy-b-midpoint-research.yml'
+      - 'src/strategy_b_midpoint_reversal_h1.py'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/aggressive_range_backtest_h1.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Existing flat detector regression
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Synthetic Strategy B profit and stop sanity tests
+        run: python src/strategy_b_midpoint_reversal_h1.py --self-test
+      - name: Download and validate original historical EURUSD H1 BID
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Run Strategy B offline only
+        run: |
+          set -o pipefail
+          python src/strategy_b_midpoint_reversal_h1.py data/eurusd_h1.csv | tee strategy-b-run.log
+      - name: Publish reports and every simulated order
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-b-midpoint-research
+          path: |
+            strategy-b-run.log
+            reports/strategy_b_midpoint_report.json
+            reports/strategy_b_*.csv
+          if-no-files-found: warn

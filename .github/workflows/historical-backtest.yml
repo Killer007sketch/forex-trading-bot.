@@ -5,16 +5,8 @@ on:
       - '.github/workflows/historical-backtest.yml'
       - 'scripts/download_eurusd.py'
       - 'src/backtest.py'
+      - 'src/trend_h4.py'
   workflow_dispatch:
-    inputs:
-      from_date:
-        description: First date (YYYY-MM-DD)
-        required: true
-        default: '2016-01-01'
-      to_date:
-        description: Exclusive end date (YYYY-MM-DD)
-        required: true
-        default: '2026-09-17'
 permissions:
   contents: read
 jobs:
@@ -29,18 +21,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Inspect downloader CLI
-        run: npx --yes dukascopy-node --help
       - name: Download and validate EURUSD H1
         run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
-      - name: Run research backtest
-        run: python src/backtest.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.005 | tee reports-summary.txt
-      - name: Upload results (not raw market data)
+      - name: Baseline H1 comparison
+        run: python src/backtest.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.005 | tee reports-baseline.txt
+      - name: Independent H4 trend development and holdout
+        run: python src/trend_h4.py data/eurusd_h1.csv --initial 300 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-trend-h4.txt
+      - name: Upload research outputs, not raw market data
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eurusd-research-results
+          name: eurusd-research-comparison
           path: |
-            reports-summary.txt
-            reports/trades.csv
+            reports-baseline.txt
+            reports-trend-h4.txt
+            reports/*.csv
           if-no-files-found: warn

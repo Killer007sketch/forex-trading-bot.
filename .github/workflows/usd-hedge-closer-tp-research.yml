@@ -1,0 +1,46 @@
+name: USD-notional hedge and closer TP research
+on:
+  push:
+    paths:
+      - '.github/workflows/usd-hedge-closer-tp-research.yml'
+      - 'src/usd_hedge_closer_tp_h1.py'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/aggressive_range_backtest_h1.py'
+      - 'src/range_guard_h1.py'
+      - 'src/trend_h4.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Flat signal regression
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Hedge in USD self-checks
+        run: python src/usd_hedge_closer_tp_h1.py --self-test
+      - name: Download and validate original historical EURUSD BID H1
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Run hypothetical research only
+        run: |
+          set -o pipefail
+          python src/usd_hedge_closer_tp_h1.py data/eurusd_h1.csv | tee usd-hedge-closer-tp-log.txt
+      - name: Publish aggregated metrics and case ledgers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usd-hedge-closer-tp-research
+          path: |
+            usd-hedge-closer-tp-log.txt
+            reports/usd_hedge_closer_tp.json
+            reports/hedge_usd_*.csv
+          if-no-files-found: warn

@@ -1,0 +1,43 @@
+name: TPO range prototype research
+on:
+  push:
+    paths:
+      - '.github/workflows/tpo-research.yml'
+      - 'src/tpo_range_h4.py'
+      - 'src/test_tpo_range_h4.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unit tests for approximation, causality, event windows
+        run: python src/test_tpo_range_h4.py
+      - name: Download and audit historical EURUSD H1
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Compare approximate TPO versus v3 regime on matching historical data
+        run: |
+          set -o pipefail
+          python src/tpo_range_h4.py data/eurusd_h1.csv | tee reports-tpo.txt
+      - name: Upload research diagnostics (exclude raw market data)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eurusd-tpo-research
+          path: |
+            reports-tpo.txt
+            reports/tpo_*.json
+            reports/tpo_*.csv
+          if-no-files-found: warn

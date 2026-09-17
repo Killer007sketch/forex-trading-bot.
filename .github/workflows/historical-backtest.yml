@@ -8,6 +8,7 @@ on:
       - 'src/trend_h4.py'
       - 'src/hybrid_h4.py'
       - 'src/robustness_h4.py'
+      - 'src/bounded_grid_h4.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,6 +16,9 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,18 +30,30 @@ jobs:
       - name: Download and validate EURUSD H1
         run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
       - name: Baseline H1 comparison at 1000 USD
-        run: python src/backtest.py data/eurusd_h1.csv --initial 1000 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.005 | tee reports-baseline.txt
+        run: |
+          set -o pipefail
+          python src/backtest.py data/eurusd_h1.csv --initial 1000 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.005 | tee reports-baseline.txt
       - name: H4 trend-only reference at 1000 USD
-        run: python src/trend_h4.py data/eurusd_h1.csv --initial 1000 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-trend-h4.txt
+        run: |
+          set -o pipefail
+          python src/trend_h4.py data/eurusd_h1.csv --initial 1000 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-trend-h4.txt
       - name: H4 hybrid versus trend and mean reversion at 1000 USD
-        run: python src/hybrid_h4.py data/eurusd_h1.csv --initial 1000 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-hybrid-h4.txt
+        run: |
+          set -o pipefail
+          python src/hybrid_h4.py data/eurusd_h1.csv --initial 1000 --spread-pips 1.5 --slippage-pips 0.3 --risk 0.0025 --min-lot 0.01 | tee reports-hybrid-h4.txt
       - name: Annualized out-of-sample and doubled-cost robustness audit
-        run: python src/robustness_h4.py data/eurusd_h1.csv --initial 1000 --risk 0.0025 --min-lot 0.01 | tee reports-robustness.txt
+        run: |
+          set -o pipefail
+          python src/robustness_h4.py data/eurusd_h1.csv --initial 1000 --risk 0.0025 --min-lot 0.01 | tee reports-robustness.txt
+      - name: Bounded grid research with independent holdout and cost stress
+        run: |
+          set -o pipefail
+          python src/bounded_grid_h4.py data/eurusd_h1.csv --initial 1000 --min-lot 0.01 | tee reports-grid.txt
       - name: Upload research outputs, not raw market data
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eurusd-hybrid-1000-research
+          name: eurusd-grid-1000-research
           path: |
             reports-*.txt
             reports/*.csv

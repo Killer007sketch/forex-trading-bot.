@@ -1,0 +1,46 @@
+name: Aggressive 12h range trading research
+on:
+  push:
+    paths:
+      - '.github/workflows/aggressive-range-backtest.yml'
+      - 'src/aggressive_range_backtest_h1.py'
+      - 'src/test_aggressive_range_backtest_h1.py'
+      - 'src/compare_tpo_atr_h1.py'
+      - 'src/test_pause_cycle_12h.py'
+      - 'src/range_guard_h1.py'
+      - 'scripts/download_eurusd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Existing matched flat signal regression tests
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Offline aggressive execution synthetic tests
+        run: python src/test_aggressive_range_backtest_h1.py
+      - name: Download validated historical EURUSD H1
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Research-only comparison of 0.5pct and 1.5pct per trade risks with cost stress
+        run: |
+          set -o pipefail
+          python src/aggressive_range_backtest_h1.py data/eurusd_h1.csv | tee aggressive-range-research.txt
+      - name: Upload complete experiment and transaction ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aggressive-12h-range-research
+          path: |
+            aggressive-range-research.txt
+            reports/aggressive_range_backtest.json
+            reports/aggressive_range_*.csv
+          if-no-files-found: warn

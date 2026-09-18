@@ -1,0 +1,41 @@
+name: Strategy A no hedge trailing research
+on:
+  push:
+    paths:
+      - '.github/workflows/strategy-a-nohedge-trailing.yml'
+      - 'src/strategy_a_no_hedge_trailing_h1.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Existing flat signal regression tests
+        run: python src/test_compare_tpo_atr_h1.py
+      - name: Verify Strategy A stop and trailing scenarios
+        run: python src/strategy_a_no_hedge_trailing_h1.py --self-test
+      - name: Obtain and validate historical EURUSD BID H1
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Run research backtest only
+        run: |
+          set -o pipefail
+          python src/strategy_a_no_hedge_trailing_h1.py data/eurusd_h1.csv | tee strategy-a-nohedge-run.log
+      - name: Archive PnL reports and fill ledgers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-a-nohedge-trailing
+          path: |
+            strategy-a-nohedge-run.log
+            reports/strategy_a_nohedge_report.json
+            reports/strategy_a_nohedge_*.csv
+          if-no-files-found: warn

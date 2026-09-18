@@ -1,0 +1,43 @@
+name: Strategy A fixed 3R hold research
+on:
+  push:
+    paths:
+      - '.github/workflows/strategy-a-3r-no-expiry.yml'
+      - 'src/strategy_a_3r_no_expiry_h1.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate previous indicator and selected entry
+        run: |
+          python src/test_compare_tpo_atr_h1.py
+          python src/strategy_a_entry_optimization_h1.py --self-test
+      - name: Validate exact 3R economics and no-expiry engine
+        run: python src/strategy_a_3r_no_expiry_h1.py --self-test
+      - name: Download and validate original historical EURUSD H1 BID
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Run fixed 3R bracket and matched timed-exit variants (offline only)
+        run: |
+          set -o pipefail
+          python src/strategy_a_3r_no_expiry_h1.py data/eurusd_h1.csv | tee strategy-a-3r-run.log
+      - name: Publish metrics and trade/fill ledgers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-a-3r-no-expiry
+          path: |
+            strategy-a-3r-run.log
+            reports/strategy_a_3r_no_expiry_report.json
+            reports/strategy_a_3r_*.csv
+          if-no-files-found: warn

@@ -1,0 +1,26 @@
+name: DOM L2 snapshot coverage scan
+on:
+  push:
+    paths:
+      - research/dom_l2_snapshot_scan.py
+      - .github/workflows/dom-l2-snapshot-scan.yml
+  workflow_dispatch:
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'pyarrow>=18,<25'
+      - name: Scan eight real hourly L2 files for usable full-depth snapshots
+        run: python research/dom_l2_snapshot_scan.py
+      - name: Upload actual coverage and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dom-l2-snapshot-scan
+          path: dom_snapshot_scan.json
+          if-no-files-found: warn

@@ -1,0 +1,9 @@
+# ONE read-only free Web Service; no real orders, no keepalive HTTP traffic.
+# Deliberately no healthCheckPath: default TCP probe does not generate an HTTP request.
+services:
+  - type: web
+    name: okx-outbound-idle-probe
+    runtime: python
+    plan: free
+    buildCommand: pip install -r research/requirements-render.txt
+    startCommand: python research/render_outbound_ws_idle_probe.py

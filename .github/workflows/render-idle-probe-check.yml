@@ -1,0 +1,38 @@
+name: Render idle probe smoke check
+on:
+  push:
+    paths:
+      - 'research/render_outbound_ws_idle_probe.py'
+      - 'research/requirements-render.txt'
+      - 'render.yaml'
+      - '.github/workflows/render-idle-probe-check.yml'
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r research/requirements-render.txt
+      - name: Compile and start local web service without credentials
+        run: |
+          python -m py_compile research/render_outbound_ws_idle_probe.py
+          PORT=10000 python research/render_outbound_ws_idle_probe.py > render-probe-smoke.log 2>&1 &
+          echo $! > /tmp/render_probe.pid
+          sleep 4
+          python - <<'PY'
+          import json, urllib.request
+          with urllib.request.urlopen('http://127.0.0.1:10000/status', timeout=5) as r:
+              data=json.load(r)
+          assert data['paper_only'] is True and data['orders_sent']==0
+          assert data['symbol']=='BTC-USDT-SWAP' and data['uptime_seconds']>=0
+          assert len(data['boot_id'])==32
+          print('RENDER_PROBE_SMOKE_OK',json.dumps(data))
+          PY
+          kill "$(cat /tmp/render_probe.pid)"
+      - name: Show probe startup log
+        if: always()
+        run: cat render-probe-smoke.log || true

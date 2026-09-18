@@ -4,6 +4,7 @@ on:
     paths:
       - 'scripts/probe_dom_historical_l2.py'
       - 'scripts/audit_dom_historical_snapshot.py'
+      - 'scripts/probe_dom_daily_seed.py'
       - '.github/workflows/dom-l2-historical-probe.yml'
   workflow_dispatch:
 jobs:
@@ -21,3 +22,5 @@ jobs:
         run: python -u scripts/probe_dom_historical_l2.py
       - name: Verify snapshot presence and update continuity
         run: python -u scripts/audit_dom_historical_snapshot.py
+      - name: Probe day-boundary history for valid L2 seed snapshots
+        run: python -u scripts/probe_dom_daily_seed.py

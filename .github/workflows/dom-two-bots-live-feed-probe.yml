@@ -1,0 +1,29 @@
+name: DOM two paper bots live feed readiness
+on:
+  push:
+    paths:
+      - research/dom_two_bots_live_feed_probe.py
+      - .github/workflows/dom-two-bots-live-feed-probe.yml
+  workflow_dispatch:
+jobs:
+  read-only-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install public websocket client
+        run: python -m pip install 'aiohttp>=3.10,<4' 'websockets>=13,<16'
+      - name: Probe real REST, public L2 and best quotes, and trade streams without keys or orders
+        run: python research/dom_two_bots_live_feed_probe.py
+      - name: Save real connectivity evidence even when unavailable
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dom-live-feed-readiness
+          path: dom_live_feed_probe.json
+          if-no-files-found: warn

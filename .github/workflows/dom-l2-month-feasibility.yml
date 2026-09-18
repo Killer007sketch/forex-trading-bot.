@@ -3,12 +3,13 @@ on:
   push:
     paths:
       - research/dom_l2_provider_probe.py
+      - research/dom_l2_hour_quality.py
       - .github/workflows/dom-l2-month-feasibility.yml
   workflow_dispatch:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,10 +19,14 @@ jobs:
         run: python -m pip install 'pyarrow>=18,<25'
       - name: Fetch genuine public L2 and trades sample, inspect integrity and schemas
         run: python research/dom_l2_provider_probe.py
+      - name: Audit snapshot IDs, sequence gaps, and trade gaps on actual sample
+        run: python research/dom_l2_hour_quality.py
       - name: Preserve probe report, including failures
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dom-l2-data-access-evidence
-          path: dom_probe_*.json
+          path: |
+            dom_probe_*.json
+            dom_l2_quality.json
           if-no-files-found: warn

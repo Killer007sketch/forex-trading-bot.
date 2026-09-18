@@ -1,4 +1,4 @@
-"""Read-only OKX BTC-USDT-SWAP public SWAP metadata + books/trades probe. No orders."""
+"""Read-only OKX BTC-USDT-SWAP metadata, reconstructed books and trades probe. No orders."""
 import asyncio
 import json
 import time
@@ -9,7 +9,7 @@ import websockets
 
 async def main():
     report={'venue':'OKX','symbol':'BTC-USDT-SWAP','paper_only':True,'orders':0,'counts':{},'errors':[]}
-    count=Counter()
+    count=Counter();bids={};asks={};last_seq=None
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as client:
         try:
             async with client.get('https://www.okx.com/api/v5/public/instruments',params={'instType':'SWAP','instId':'BTC-USDT-SWAP'}) as resp:
@@ -26,13 +26,10 @@ async def main():
             report['websocket_connected']=True
             await ws.send(json.dumps({'op':'subscribe','args':[{'channel':'books','instId':'BTC-USDT-SWAP'},{'channel':'trades','instId':'BTC-USDT-SWAP'}]}))
             end=time.monotonic()+18
-            last_seq=None
             while time.monotonic()<end:
                 try:raw=await asyncio.wait_for(ws.recv(),timeout=3)
                 except asyncio.TimeoutError:
-                    await ws.send('ping')
-                    count['ping_sent']+=1
-                    continue
+                    await ws.send('ping');count['ping_sent']+=1;continue
                 if raw=='pong':count['pong']+=1;continue
                 msg=json.loads(raw)
                 if msg.get('event'):
@@ -43,21 +40,28 @@ async def main():
                 for item in msg.get('data',[]):
                     if channel=='books':
                         count['books']+=1
-                        if msg.get('action')=='snapshot':count['snapshots']+=1
-                        if msg.get('action')=='update':count['updates']+=1
+                        if msg.get('action')=='snapshot':
+                            count['snapshots']+=1
+                            bids.clear();asks.clear();last_seq=None
+                        elif msg.get('action')=='update':count['updates']+=1
                         if last_seq is not None and item.get('prevSeqId') is not None and int(item['prevSeqId'])!=last_seq:count['seq_mismatches']+=1
                         if item.get('seqId') is not None:last_seq=int(item['seqId'])
-                        bids=item.get('bids',[]);asks=item.get('asks',[])
+                        for dest,name in ((bids,'bids'),(asks,'asks')):
+                            for row in item.get(name,[]):
+                                p=float(row[0]);q=float(row[1])
+                                if q==0:dest.pop(p,None)
+                                elif p>0 and q>0:dest[p]=q
                         if bids and asks:
                             count['two_sided_books']+=1
-                            if float(bids[0][0])>=float(asks[0][0]):count['crossed_book']+=1
+                            bid=max(bids);ask=min(asks)
+                            if bid>=ask:count['crossed_book']+=1
                     elif channel=='trades':
                         count['trades']+=1
                         if item.get('side') not in ('buy','sell'):count['bad_trade_side']+=1
                     else:count['unknown_channel']+=1
     except Exception as exc:report['errors'].append('WSS:'+type(exc).__name__+':'+str(exc)[:200])
     report['counts']=dict(count)
-    report['ready_for_adapter']=bool(report.get('contract') and report.get('websocket_connected') and count['snapshots']>=1 and count['two_sided_books']>0 and count['trades']>0 and count['seq_mismatches']==0 and count['crossed_book']==0 and not report['errors'])
+    report['ready_for_adapter']=bool(report.get('contract') and report.get('websocket_connected') and count['snapshots']>=1 and count['two_sided_books']>0 and count['trades']>0 and count['seq_mismatches']==0 and count['crossed_book']==0 and count['bad_trade_side']==0 and not report['errors'])
     Path('okx_live_probe.json').write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n')
     print('OKX_PROBE',json.dumps(report,ensure_ascii=False),flush=True)
     if not report['ready_for_adapter']:raise SystemExit('Not ready for OKX adapter')

@@ -1,0 +1,24 @@
+name: DOM Tardis public sample access
+on:
+  push:
+    paths:
+      - research/dom_tardis_sample_probe.py
+      - .github/workflows/dom-tardis-public-sample.yml
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate real first-of-month free historical BTC and ETH snapshot and trades format
+        run: python research/dom_tardis_sample_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dom-tardis-public-sample-evidence
+          path: dom_tardis_probe.json
+          if-no-files-found: warn

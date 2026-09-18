@@ -1,0 +1,27 @@
+name: DOM L2 month feasibility
+on:
+  push:
+    paths:
+      - research/dom_l2_provider_probe.py
+      - .github/workflows/dom-l2-month-feasibility.yml
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Parquet reader
+        run: python -m pip install 'pyarrow>=18,<25'
+      - name: Fetch genuine public L2 and trades sample, inspect integrity and schemas
+        run: python research/dom_l2_provider_probe.py
+      - name: Preserve probe report, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dom-l2-data-access-evidence
+          path: dom_probe_*.json
+          if-no-files-found: warn

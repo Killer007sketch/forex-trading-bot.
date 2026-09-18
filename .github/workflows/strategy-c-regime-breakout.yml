@@ -1,0 +1,41 @@
+name: Strategy C regime breakout research
+on:
+  push:
+    paths:
+      - '.github/workflows/strategy-c-regime-breakout.yml'
+      - 'src/strategy_c_regime_breakout_h4.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify existing indicator and candidate's exact risk economics
+        run: |
+          python src/test_compare_tpo_atr_h1.py
+          python src/strategy_c_regime_breakout_h4.py --self-test
+      - name: Download and validate EURUSD from same historical source
+        run: python scripts/download_eurusd.py --from-date '2016-01-01' --to-date '2026-09-17'
+      - name: Test unchanged candidate on chronological periods and doubled costs
+        run: |
+          set -o pipefail
+          python src/strategy_c_regime_breakout_h4.py data/eurusd_h1.csv | tee strategy-c-run.log
+      - name: Save complete results and executed trade ledgers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-c-regime-breakout
+          path: |
+            strategy-c-run.log
+            reports/strategy_c_regime_breakout_report.json
+            reports/strategy_c_*_trades.csv
+          if-no-files-found: warn

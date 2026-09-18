@@ -1,0 +1,27 @@
+name: DOM Tardis real one-hour tape
+on:
+  push:
+    paths:
+      - 'scripts/download_tardis_dom_hour.py'
+      - '.github/workflows/dom-tardis-hour-capture.yml'
+  workflow_dispatch:
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download one contiguous real UTC hour, checksummed
+        run: python -u scripts/download_tardis_dom_hour.py
+      - name: Publish genuine event tape and hash manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: tardis-btc-real-hour-20260901
+          path: |
+            data/tardis_BTCUSDT_2026-09-01_00-01_native.ndjson.gz
+            data/tardis_hour_provenance.json
+          if-no-files-found: error
+          retention-days: 30
